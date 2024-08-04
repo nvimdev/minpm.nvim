@@ -63,8 +63,10 @@ local function info_win()
     col = 10,
     border = 'rounded',
     noautocmd = true,
+    style = 'minimal',
   })
   vim.wo[win].wrap = false
+  vim.bo[bufnr].buftype = 'nofile'
   return win, bufnr
 end
 
