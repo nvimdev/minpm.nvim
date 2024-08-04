@@ -10,6 +10,7 @@ local STARTDIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'start')
 local OPTDIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'opt')
 ---@diagnostic disable-next-line: param-type-mismatch
 vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
+local bufnr, winid
 
 local function as_table(data)
   return type(data) ~= 'table' and { data } or data
@@ -30,6 +31,10 @@ function use_meta:event(e)
           modeline = false,
           data = args.data,
         })
+        if self.setup_config then
+          module = self.tail:gsub('%.nvim', '') or self.tail:gsub('-nvim', '')
+          require(module).setup(self.setup_config)
+        end
       end
     end,
   })
@@ -43,7 +48,7 @@ function use_meta:ft(ft)
 end
 
 function use_meta:setup(config)
-  self.setup = config
+  self.setup_config = config
   return self
 end
 
@@ -54,7 +59,7 @@ function use_meta:config(config)
 end
 
 local function info_win()
-  local bufnr = api.nvim_create_buf(false, false)
+  bufnr = api.nvim_create_buf(false, false)
   local win = api.nvim_open_win(bufnr, true, {
     relative = 'editor',
     height = math.floor(vim.o.lines * 0.5),
@@ -70,8 +75,6 @@ local function info_win()
   return win, bufnr
 end
 
-local bufnr, winid
-
 local function handle_git_output(index, data)
   vim.schedule(function()
     if not winid then
@@ -81,7 +84,7 @@ local function handle_git_output(index, data)
   end)
 end
 
-function use_meta:do_action(index, action)
+function use_meta:do_action(index, action, on_complete)
   local path = vim.fs.joinpath(self.islazy and OPTDIR or STARTDIR, self.tail)
   local url = ('https://github.com/%s'):format(self.name)
   local cmd = action == INSTALL and { 'git', 'clone', '--progress', url, path }
@@ -108,18 +111,34 @@ function use_meta:do_action(index, action)
         lines = vim.split(lines, '\n', { trimempty = true })
         handle_git_output(index, ('%s: %s'):format(self.name, lines[#lines]))
       end
+      on_complete()
     end))
   end)
 end
 
 local function action(act)
   local index = 0
+  local completed_count = 0
+  local function on_complete()
+    completed_count = completed_count + 1
+    if completed_count == index then
+      vim.schedule(function()
+        if winid then
+          api.nvim_win_close(winid, true)
+          winid = nil
+          bufnr = nil
+          vim.notify('[Minpm] All plugins installed please restart neovim', vim.log.levels.WARN)
+        end
+      end)
+    end
+  end
+
   vim.iter(repos):map(function(repo)
     if not repo.remote then
       return
     end
     index = index + 1
-    repo:do_action(index, act)
+    repo:do_action(index, act, on_complete)
   end)
 end
 
