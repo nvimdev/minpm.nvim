@@ -1,10 +1,15 @@
 local api, stdpath, uv = vim.api, vim.fn.stdpath, vim.uv
 local repos, INSTALL, UPDATE = {}, 0, 1
+local buf_set_lines, create_autocmd = api.nvim_buf_set_lines, api.nvim_create_autocmd
+local packadd = vim.cmd.packadd
+local exec_autocmds = api.nvim_exec_autocmds
 local data_dir = stdpath('data')
 ---@diagnostic disable-next-line: param-type-mismatch
-local STARTDIR = vim.fs.joinpath(data_dir, 'site', 'minpm', 'start')
+local STARTDIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'start')
 ---@diagnostic disable-next-line: param-type-mismatch
-local OPTDIR = vim.fs.joinpath(data_dir, 'site', 'minpm', 'opt')
+local OPTDIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'opt')
+---@diagnostic disable-next-line: param-type-mismatch
+vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
 
 local function as_table(data)
   return type(data) ~= 'table' and { data } or data
@@ -15,6 +20,19 @@ use_meta.__index = use_meta
 function use_meta:event(e)
   self.event = as_table(e)
   self.islazy = true
+  local triggered = false
+  create_autocmd(e, {
+    callback = function(args)
+      if not triggered and self.remote then
+        triggered = true
+        packadd(self.tail)
+        exec_autocmds(e, {
+          modeline = false,
+          data = args.data,
+        })
+      end
+    end,
+  })
   return self
 end
 
@@ -57,13 +75,12 @@ local function handle_git_output(index, data)
     if not winid then
       winid, bufnr = info_win()
     end
-    api.nvim_buf_set_lines(bufnr, index - 1, index, false, { data })
+    buf_set_lines(bufnr, index - 1, index, false, { data })
   end)
 end
 
 function use_meta:do_action(index, action)
-  local tail = vim.split(self.name, '/')[2]
-  local path = vim.fs.joinpath(self.islazy and OPTDIR or STARTDIR, tail)
+  local path = vim.fs.joinpath(self.islazy and OPTDIR or STARTDIR, self.tail)
   local url = ('https://github.com/%s'):format(self.name)
   local cmd = action == INSTALL and { 'git', 'clone', '--progress', url, path }
     or { 'git', '-C', '--progress', path, 'pull' }
@@ -96,6 +113,9 @@ end
 local function action(act)
   local index = 0
   vim.iter(repos):map(function(repo)
+    if not repo.remote then
+      return
+    end
     index = index + 1
     repo:do_action(index, act)
   end)
@@ -103,9 +123,14 @@ end
 
 return {
   use = function(name)
-    local repo = setmetatable({ name = name }, use_meta)
-    repos[#repos + 1] = repo
-    return repo
+    name = vim.fs.normalize(name)
+    local parts = vim.split(name, '/', { trimempty = true })
+    repos[#repos + 1] = setmetatable({
+      name = name,
+      remote = not name:find(vim.env.HOME),
+      tail = parts[#parts],
+    }, use_meta)
+    return repos[#repos]
   end,
   install = function()
     action(INSTALL)
