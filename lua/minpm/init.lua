@@ -10,7 +10,7 @@ local STARTDIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'start')
 local OPTDIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'opt')
 ---@diagnostic disable-next-line: param-type-mismatch
 vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
-local bufnr, winid
+local if_nil = vim.F.if_nil
 
 local function as_table(data)
   return type(data) ~= 'table' and { data } or data
@@ -18,14 +18,14 @@ end
 
 local use_meta = {}
 use_meta.__index = use_meta
-function use_meta:event(e)
+function use_meta:when(e)
   self.event = as_table(e)
   self.islazy = true
-  local triggered = false
-  create_autocmd(e, {
+  local id
+  id = create_autocmd(e, {
     callback = function(args)
-      if not triggered and self.remote then
-        triggered = true
+      if self.remote then
+        api.nvim_del_autocmd(id)
         packadd(self.tail)
         exec_autocmds(e, {
           modeline = false,
@@ -41,7 +41,7 @@ function use_meta:event(e)
   return self
 end
 
-function use_meta:ft(ft)
+function use_meta:lang(ft)
   self.ft = as_table(ft)
   self.islazy = true
   return self
@@ -58,33 +58,51 @@ function use_meta:config(config)
   return self
 end
 
-local function info_win()
-  bufnr = api.nvim_create_buf(false, false)
-  local win = api.nvim_open_win(bufnr, true, {
-    relative = 'editor',
-    height = math.floor(vim.o.lines * 0.5),
-    width = math.floor(vim.o.columns * 0.8),
-    row = 3,
-    col = 10,
-    border = 'rounded',
-    noautocmd = true,
-    style = 'minimal',
-  })
-  vim.wo[win].wrap = false
-  vim.bo[bufnr].buftype = 'nofile'
-  return win, bufnr
+local window = {}
+function window:new()
+  local o = {}
+  setmetatable(o, self)
+  self.__index = self
+  self.content = {}
+  self.last_row = -1
+  vim.schedule(function()
+    self.bufnr = api.nvim_create_buf(false, false)
+    self.win = api.nvim_open_win(self.bufnr, true, {
+      relative = 'editor',
+      height = math.floor(vim.o.lines * 0.5),
+      width = math.floor(vim.o.columns * 0.8),
+      row = 3,
+      col = 10,
+      border = 'rounded',
+      noautocmd = true,
+      style = 'minimal',
+    })
+    vim.wo[self.win].wrap = false
+    vim.bo[self.bufnr].buftype = 'nofile'
+  end)
+  return o
 end
 
-local function handle_git_output(index, data)
-  vim.schedule(function()
-    if not winid then
-      winid, bufnr = info_win()
+function window:get_row(repo_name)
+  if not vim.list_contains(self.content, repo_name) then
+    self.content[#self.content + 1] = repo_name
+    return #self.content
+  end
+  for k, v in ipairs(self.content) do
+    if v == repo_name then
+      return k
     end
-    buf_set_lines(bufnr, index - 1, index, false, { data })
+  end
+end
+
+function window:write_output(name, data)
+  local row = self:get_row(name) - 1
+  vim.schedule(function()
+    buf_set_lines(self.bufnr, row, row + 1, false, { ('%s: %s'):format(name, data) })
   end)
 end
 
-function use_meta:do_action(index, action, on_complete)
+function use_meta:do_action(action, winobj)
   local path = vim.fs.joinpath(self.islazy and OPTDIR or STARTDIR, self.tail)
   local url = ('https://github.com/%s'):format(self.name)
   local cmd = action == INSTALL and { 'git', 'clone', '--progress', url, path }
@@ -109,37 +127,28 @@ function use_meta:do_action(index, action, on_complete)
         local lines = err and err or data
         lines = lines:gsub('\r', '\n'):gsub('\n+', '\n')
         lines = vim.split(lines, '\n', { trimempty = true })
-        handle_git_output(index, ('%s: %s'):format(self.name, lines[#lines]))
+        winobj:write_output(self.name, lines[#lines])
       end
-      on_complete()
     end))
   end)
 end
 
-local function action(act)
-  local index = 0
-  local completed_count = 0
-  local function on_complete()
-    completed_count = completed_count + 1
-    if completed_count == index then
-      vim.schedule(function()
-        if winid then
-          api.nvim_win_close(winid, true)
-          winid = nil
-          bufnr = nil
-          vim.notify('[Minpm] All plugins installed please restart neovim', vim.log.levels.WARN)
-        end
-      end)
-    end
-  end
-
+local function action_wrapper(act)
+  local winobj = window:new()
   vim.iter(repos):map(function(repo)
     if not repo.remote then
       return
     end
-    index = index + 1
-    repo:do_action(index, act, on_complete)
+    repo:do_action(act, winobj)
   end)
+end
+
+if if_nil(vim.g.minpm_auto_install, true) then
+  create_autocmd('UIEnter', {
+    callback = function()
+      action_wrapper(INSTALL)
+    end,
+  })
 end
 
 return {
@@ -154,9 +163,9 @@ return {
     return repos[#repos]
   end,
   install = function()
-    action(INSTALL)
+    action_wrapper(INSTALL)
   end,
   update = function()
-    action(UPDATE)
+    action_wrapper(UPDATE)
   end,
 }
