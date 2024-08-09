@@ -65,22 +65,24 @@ function window:new()
   self.__index = self
   self.content = {}
   self.last_row = -1
-  vim.schedule(function()
-    self.bufnr = api.nvim_create_buf(false, false)
-    self.win = api.nvim_open_win(self.bufnr, true, {
-      relative = 'editor',
-      height = math.floor(vim.o.lines * 0.5),
-      width = math.floor(vim.o.columns * 0.8),
-      row = 3,
-      col = 10,
-      border = 'rounded',
-      noautocmd = true,
-      style = 'minimal',
-    })
-    vim.wo[self.win].wrap = false
-    vim.bo[self.bufnr].buftype = 'nofile'
-  end)
   return o
+end
+
+function window:creaet()
+  self.bufnr = api.nvim_create_buf(false, false)
+  self.win = api.nvim_open_win(self.bufnr, true, {
+    relative = 'editor',
+    height = math.floor(vim.o.lines * 0.5),
+    width = math.floor(vim.o.columns * 0.8),
+    row = 3,
+    col = 10,
+    border = 'rounded',
+    noautocmd = true,
+    style = 'minimal',
+    hide = true,
+  })
+  vim.wo[self.win].wrap = false
+  vim.bo[self.bufnr].buftype = 'nofile'
 end
 
 function window:get_row(repo_name)
@@ -98,6 +100,9 @@ end
 function window:write_output(name, data)
   local row = self:get_row(name) - 1
   vim.schedule(function()
+    if not self.bufnr then
+      self:create_window()
+    end
     buf_set_lines(self.bufnr, row, row + 1, false, { ('%s: %s'):format(name, data) })
   end)
 end
@@ -134,38 +139,39 @@ function use_meta:do_action(action, winobj)
 end
 
 local function action_wrapper(act)
-  local winobj = window:new()
-  vim.iter(repos):map(function(repo)
-    if not repo.remote then
-      return
-    end
-    repo:do_action(act, winobj)
-  end)
+  return function()
+    local winobj = window:new()
+    vim.iter(repos):map(function(repo)
+      if not repo.remote then
+        return
+      end
+      repo:do_action(act, winobj)
+    end)
+  end
 end
 
 if if_nil(vim.g.minpm_auto_install, true) then
   create_autocmd('UIEnter', {
     callback = function()
-      action_wrapper(INSTALL)
+      action_wrapper(INSTALL)()
     end,
   })
 end
 
-return {
-  use = function(name)
-    name = vim.fs.normalize(name)
-    local parts = vim.split(name, '/', { trimempty = true })
-    repos[#repos + 1] = setmetatable({
-      name = name,
-      remote = not name:find(vim.env.HOME),
-      tail = parts[#parts],
-    }, use_meta)
-    return repos[#repos]
+local function use(name)
+  name = vim.fs.normalize(name)
+  local parts = vim.split(name, '/', { trimempty = true })
+  repos[#repos + 1] = setmetatable({
+    name = name,
+    remote = not name:find(vim.env.HOME),
+    tail = parts[#parts],
+  }, use_meta)
+  return repos[#repos]
+end
+
+return setmetatable({}, {
+  __index = function(_, k)
+    local t = { use = use, complete = { 'install', 'update' } }
+    return t[k] or action_wrapper(k:upper())
   end,
-  install = function()
-    action_wrapper(INSTALL)
-  end,
-  update = function()
-    action_wrapper(UPDATE)
-  end,
-}
+})
