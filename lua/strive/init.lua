@@ -1316,6 +1316,9 @@ function Plugin:update(skip_check)
       end
 
       ui:update_entry(self.name, self.status, update_info)
+      if self.run_action then
+        self:load(true)
+      end
       callback(true, 'updated')
     else
       self.status = STATUS.ERROR
